@@ -1,0 +1,8 @@
+# Monitor 依赖
+#   pip install -r requirements.txt
+#
+# 说明：仅在 Windows 上运行（进程监控、图标提取、注册表自启动、托盘均依赖 Windows）。
+PySide6>=6.5          # GUI 框架（Qt6），配合 QSS 实现浅色 Fluent 风格
+psutil>=5.9           # 每 1 秒轮询进程，按 PID 感知程序启停
+pywin32>=305          # win32api / win32gui：提取 .exe 图标、读取文件版本信息
+comtypes>=1.4         # UI Automation（读浏览器当前标签页网址，用于网站追踪与控制）

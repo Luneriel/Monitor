@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 数据库 / 运行时数据
+# data/ 内含企业微信 webhook 地址、密码哈希、个人使用日志和从本机提取的第三方图标，
+# 整个目录严禁入库；程序首次启动会自行创建。
+data/
+*.db
+*.db.bak
+*.db-*
+*.sqlite
+*.sqlite3
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+# 打包产物（由 build_exe.py 重新生成）
+build/
+dist/
