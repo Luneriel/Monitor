@@ -11,7 +11,7 @@ import os
 import sys
 
 APP_NAME = "Monitor"
-APP_VERSION = "2.0.0"
+APP_VERSION = "0.1.0"
 
 # --------------------------------------------------------------------------
 # 路径
