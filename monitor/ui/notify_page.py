@@ -96,7 +96,7 @@ class _Section(Panel):
         if trailing is not None:
             head.addWidget(trailing, 0, Qt.AlignVCenter)
 
-        self.arrow = QPushButton(self)
+        self.arrow = IconButton("chevron_right", parent=self, size=30, icon_size=16, flat=True)
         self.arrow.setObjectName("IconButtonFlat")
         self.arrow.setCursor(Qt.PointingHandCursor)
         self.arrow.setFixedSize(config.sx(30), config.sx(30))
@@ -114,9 +114,8 @@ class _Section(Panel):
         self.arrow.clicked.connect(self.toggle)
         self._sync_arrow()
 
-    def _sync_arrow(self) -> None:
-        name = "chevron_down" if self._expanded else "chevron_right"
-        self.arrow.setIcon(vector_icons.icon(name, config.sx(16), config.C_TEXT_MUTED, 1.9))
+    def _sync_arrow(self, animate=True) -> None:
+        self.arrow.set_expanded(self._expanded, animate=animate and self.isVisible(), right=True)
 
     def toggle(self) -> None:
         self.set_expanded(not self._expanded)
@@ -127,7 +126,7 @@ class _Section(Panel):
             self._anim.stop()
             self._anim = None
         self._expanded = expanded
-        self._sync_arrow()
+        self._sync_arrow(animate)
         if not animate:
             clip_height(self.content, None if expanded else 0, visible=expanded)
             return
@@ -277,7 +276,7 @@ class _DurationPanel(Panel):
         self.changed.emit()
 
     def _sync_empty(self) -> None:
-        self.empty_label.setVisible(not self.values and not self.pending.isVisible())
+        self.empty_label.setVisible(not self.values and self.pending.isHidden())
 
     def _rebuild(self) -> None:
         suppress_tooltips()
@@ -330,7 +329,7 @@ class DurationSelector(QWidget):
         self.add_btn.clicked.connect(self._on_add)
         head.addWidget(self.add_btn, 0)
 
-        self.toggle_btn = QPushButton(self)
+        self.toggle_btn = IconButton("chevron_down", parent=self, size=28, icon_size=15, flat=True)
         self.toggle_btn.setObjectName("PlusButton")
         self.toggle_btn.setFixedSize(config.sx(28), config.sx(28))
         self.toggle_btn.setCursor(Qt.PointingHandCursor)
@@ -360,10 +359,8 @@ class DurationSelector(QWidget):
     def is_expanded(self) -> bool:
         return self._expanded
 
-    def _sync_toggle_icon(self) -> None:
-        name = "chevron_up" if self._expanded else "chevron_down"
-        self.toggle_btn.setIcon(vector_icons.icon(name, config.sx(15),
-                                                  config.C_TEXT_BODY, 2.0))
+    def _sync_toggle_icon(self, animate=True) -> None:
+        self.toggle_btn.set_expanded(self._expanded, animate=animate and self.isVisible())
 
     def _on_panel_changed(self) -> None:
         self._values = list(self.panel.values)
@@ -374,15 +371,16 @@ class DurationSelector(QWidget):
 
     def _on_add(self) -> None:
         """点 + 号：展开下拉栏（真实改变容器高度）并在最下方出现一行待选项。"""
-        self.set_expanded(True)
         self.panel.show_pending()
+        self.set_expanded(True)
+        self.panel.pending.grab()
 
     def set_expanded(self, expanded: bool, animate: bool = True) -> None:
         expanded = bool(expanded)
         if expanded == self._expanded:
             return
         self._expanded = expanded
-        self._sync_toggle_icon()
+        self._sync_toggle_icon(animate)
         if not animate:
             clip_height(self.panel, None if expanded else 0, visible=expanded)
             return

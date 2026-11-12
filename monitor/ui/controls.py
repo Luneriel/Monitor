@@ -11,14 +11,14 @@ from typing import Optional
 
 from PySide6.QtCore import (Property, QAbstractAnimation, QEasingCurve, QPropertyAnimation, QRectF,
                             QSize, Qt, QVariantAnimation, Signal)
-from PySide6.QtGui import QColor, QCursor, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QCursor, QFontMetrics, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QStyle, QStyleOptionButton,
                                QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QLineEdit,
                                QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from .. import config
 from ..i18n import tr
-from . import theme, vector_icons
+from . import motion, theme, vector_icons
 
 # --------------------------------------------------------------------------
 # 基础容器
@@ -91,6 +91,7 @@ class Card(QFrame):
             int(idle.red() + (hovered.red() - idle.red()) * t),
             int(idle.green() + (hovered.green() - idle.green()) * t),
             int(idle.blue() + (hovered.blue() - idle.blue()) * t),
+            int(idle.alpha() + (hovered.alpha() - idle.alpha()) * t),
         )
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -106,8 +107,15 @@ class Card(QFrame):
                 dy=config.sx(2) + config.sx(4) * strength,
                 alpha=int(config.SHADOW_IDLE_ALPHA + 26 * strength),
             )
-        painter.setBrush(self._background_color())
-        painter.setPen(QPen(QColor(self._border_color()), 1))
+        surface = self._background_color()
+        border = QColor(self._border_color())
+        if config.current_theme() == config.THEME_GLASS:
+            from . import glass_effects
+            surface.setAlphaF(glass_effects.opacity('card'))
+            if not self._selected:
+                border = QColor(glass_effects.border_color())
+        painter.setBrush(surface)
+        painter.setPen(QPen(border, 1))
         painter.drawRoundedRect(rect, self._radius, self._radius)
         painter.end()
 
@@ -574,6 +582,54 @@ class StatusDot(QWidget):
 # --------------------------------------------------------------------------
 
 
+def _animate_chevron(owner, target, apply, animate=True):
+    previous = getattr(owner, '_chevron_anim', None)
+    if previous is not None:
+        previous.stop()
+        previous.deleteLater()
+        owner._chevron_anim = None
+    start = getattr(owner, '_chevron_angle', target)
+    if not animate or not motion.should_animate(owner) or abs(target - start) < .1:
+        owner._chevron_angle = target
+        apply(target)
+        return
+    animation = QVariantAnimation(owner)
+    animation.setDuration(motion.COLLAPSE_MS)
+    animation.setStartValue(start)
+    animation.setEndValue(float(target))
+    animation.setEasingCurve(motion.easing())
+    def tick(value):
+        owner._chevron_angle = float(value)
+        apply(float(value))
+    animation.valueChanged.connect(tick)
+    animation.finished.connect(lambda: setattr(owner, '_chevron_anim', None))
+    owner._chevron_anim = animation
+    animation.start(QAbstractAnimation.DeleteWhenStopped)
+
+
+class Chevron(QWidget):
+    """A fixed-size painted disclosure icon; rotating never changes text layout."""
+    def __init__(self, size=14, color='', parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.color = color or config.C_TEXT_MUTED
+        self._chevron_angle = 0.
+        motion.track_input()
+
+    def set_expanded(self, expanded, animate=True):
+        _animate_chevron(self, 180. if expanded else 0., lambda _: self.update(), animate)
+
+    def paintEvent(self, event):  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.translate(self.width() / 2., self.height() / 2.)
+        painter.rotate(self._chevron_angle)
+        size = self.width()
+        vector_icons.paint_icon(painter, 'chevron_down', -size / 2., -size / 2., size,
+                                self.color, 1.9)
+        painter.end()
+
+
 class IconButton(QPushButton):
     """图标按钮：`IconButton`（描边）或 `IconButtonFlat`（无底）。"""
 
@@ -581,6 +637,7 @@ class IconButton(QPushButton):
                  icon_size: int = 17, color: str = "",
                  parent: Optional[QWidget] = None, flat: bool = False) -> None:
         super().__init__(parent)
+        motion.track_input()
         color = color or config.C_TEXT_BODY
         self.setObjectName("IconButtonFlat" if flat else "IconButton")
         self.setCursor(QCursor(Qt.PointingHandCursor))
@@ -599,6 +656,24 @@ class IconButton(QPushButton):
         if color:
             self._color = color
         self.setIcon(vector_icons.icon(name, self._icon_size, self._color))
+
+    def set_expanded(self, expanded: bool, animate=True, right=False) -> None:
+        def apply(angle):
+            size = config.sx(self._icon_size)
+            image = QPixmap(size, size)
+            image.fill(Qt.transparent)
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.translate(size / 2., size / 2.)
+            painter.rotate(angle)
+            vector_icons.paint_icon(painter, 'chevron_down', -size / 2., -size / 2.,
+                                    size, self._color, 1.9)
+            painter.end()
+            self.setIcon(QIcon(image))
+        if not hasattr(self, '_chevron_angle'):
+            self._chevron_angle = (-90. if right else 0.)
+        target = (0. if expanded else -90.) if right else (180. if expanded else 0.)
+        _animate_chevron(self, target, apply, animate)
 
     def set_icon_size_px(self, size: int) -> None:
         self._icon_size = size

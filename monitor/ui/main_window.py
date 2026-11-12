@@ -5,8 +5,8 @@ from __future__ import annotations
 import sys
 from typing import Optional
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QCursor, QIcon, QPainterPath, QRegion
+from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QPropertyAnimation, QRectF, QSize, Qt, Signal, QTimer
+from PySide6.QtGui import QColor, QCursor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QRegion
 from PySide6.QtWidgets import (QAbstractSlider, QFrame, QGraphicsOpacityEffect,
                                QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget,
                                QVBoxLayout, QWidget)
@@ -21,6 +21,7 @@ from .logs_page import LogsPage
 from .notify_page import NotifyPage
 from .settings_page import SettingsPage
 from .title_bar import TitleBar
+from . import glass, motion
 
 # 页面顺序固定：首页 / 日志 / 通知 / 控制 / 设置（文案随语言切换）
 PAGE_KEYS = [
@@ -55,6 +56,7 @@ class NavButton(QPushButton):
         super().__init__(text, parent)
         self.setObjectName("NavButton")
         self.setCheckable(True)
+        self.setStyleSheet('QPushButton#NavButton:checked, QPushButton#NavButton:checked:hover { background: transparent; }')
         self.setCursor(QCursor(Qt.PointingHandCursor))
         self.setFont(theme.font(config.FONT_NAV, bold=True))
         self.setFixedHeight(config.sx(44))
@@ -78,6 +80,23 @@ class NavButton(QPushButton):
         super().leaveEvent(event)
 
 
+class _NavHighlight(QWidget):
+    """One moving surface, independent of the buttons and their hit regions."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(config.C_SIDEBAR_ACTIVE))
+        edge = QColor(config.C_SELECTED_BORDER)
+        edge.setAlpha(65)
+        painter.setPen(QPen(edge, 1))
+        painter.drawRoundedRect(QRectF(self.rect()).adjusted(.5, .5, -.5, -.5), 11, 11)
+        painter.end()
+
+
 class NavBar(QWidget):
     """左侧深色导航栏（占满整列高度）：品牌 + 首页/日志/通知，分隔线下为置底的设置。"""
 
@@ -88,6 +107,12 @@ class NavBar(QWidget):
         super().__init__(parent)
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setObjectName("NavBar")
+        motion.track_input()
+        self._selected_index = 0
+        self._highlight = _NavHighlight(self)
+        self._highlight.hide()
+        self._highlight_motion = QPropertyAnimation(self._highlight, b'geometry', self)
+        self._highlight_motion.setDuration(220)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(config.sx(12), config.sx(10), config.sx(12), config.sx(14))
@@ -168,8 +193,38 @@ class NavBar(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def set_current(self, index: int) -> None:
+        self._selected_index = index
         for button, page_index in zip(self.buttons, TOP_PAGES + [BOTTOM_PAGE]):
             button.set_active(page_index == index)
+        self._sync_highlight(True)
+
+    def _sync_highlight(self, animate=False):
+        if not hasattr(self, 'buttons') or not self.buttons:
+            return
+        index = (TOP_PAGES + [BOTTOM_PAGE]).index(self._selected_index)
+        target = self.buttons[index].geometry()
+        if target.width() <= 0 or target.height() <= 0:
+            return
+        current = self._highlight.geometry()
+        visible = self._highlight.isVisible()
+        self._highlight_motion.stop()
+        self._highlight.show()
+        self._highlight.lower()
+        if animate and visible and motion.should_animate(self) and current != target:
+            self._highlight_motion.setEasingCurve(motion.easing())
+            self._highlight_motion.setStartValue(current)
+            self._highlight_motion.setEndValue(target)
+            self._highlight_motion.start()
+        else:
+            self._highlight.setGeometry(target)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self, lambda: self._sync_highlight(False))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self, lambda: self._sync_highlight(False))
 
     def set_footer(self, text: str) -> None:
         # 1 Hz 的 tick 会反复喂同样的文本，QLabel 每次都走一遍布局/重绘，
@@ -284,14 +339,15 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # 界面构建 / 主题与语言切换时的原地重建
     # ------------------------------------------------------------------
-    def _build_ui(self) -> None:
-        central = QWidget(self)
+    def _build_ui(self, central=None) -> None:
+        central = central if central is not None else glass.GlassBackground(self.db, self)
         central.setObjectName("AppRoot")
         central.setAttribute(Qt.WA_StyledBackground, True)
         self._central = central
-        self.setCentralWidget(central)
+        if self.centralWidget() is not central:
+            self.setCentralWidget(central)
 
-        outer = QVBoxLayout(central)
+        outer = central.layout() or QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
@@ -353,11 +409,16 @@ class MainWindow(QMainWindow):
         提示气泡一闪而过。
         """
         index = self._current_index
-        old = self.centralWidget()
+        central = self.centralWidget()
+        # Rebuild themed controls, not the wallpaper engine/library/rotation.
+        # Replacing AppRoot starts a new browser on each return to glass and
+        # relies on deferred QObject teardown to reclaim the previous one.
+        item = central.layout().takeAt(0)
+        old = item.widget()
+        self.settings_page._glass_preview_timer.stop()
         old.hide()
-        self.setCentralWidget(None)
-        self._build_ui()
         old.deleteLater()
+        self._build_ui(central)
         # 新中央部件此刻还没被布局撑开，先按窗口尺寸摆好再应用度量
         self._central.setGeometry(0, 0, self.width(), self.height())
         self._apply_layout_metrics()
@@ -365,6 +426,7 @@ class MainWindow(QMainWindow):
         self.switch_page(index, animate=False)
         self._update_nav_footer()
         self._central.update()
+        glass.refresh_window(self, self.db)
 
     # ------------------------------------------------------------------
     # 无边框窗口：最大化 / 还原、边缘拖拽缩放、圆角
@@ -386,13 +448,9 @@ class MainWindow(QMainWindow):
             if not self.isMinimized():
                 self.home_page._update_visible_times()
 
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        self._apply_window_chrome()
-
     def _apply_window_chrome(self) -> None:
         """Win11：圆角 + 系统阴影（DWM），失败时静默忽略。"""
-        if not sys.platform.startswith("win"):
+        if not sys.platform.startswith("win") or QGuiApplication.platformName() in ("offscreen", "minimal"):
             return
         try:
             import ctypes
@@ -498,6 +556,9 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         self._apply_layout_metrics()
+        self._apply_window_chrome()
+        self._glass_native_signature = None  # chrome reapplies frame margins on show
+        glass.refresh_window(self, self.db)
         if self._pending_refresh:
             self._pending_refresh = False
             self.home_page.refresh()
@@ -546,7 +607,8 @@ class MainWindow(QMainWindow):
         if callable(enter) and animate and self.isVisible():
             enter()
 
-        if not animate or not self.isVisible():
+        # A solid fade curtain briefly covers the wallpaper in glass mode.
+        if not animate or not self.isVisible() or config.current_theme() == config.THEME_GLASS:
             return
         self._fade_curtain()
 

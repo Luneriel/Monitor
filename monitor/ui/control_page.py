@@ -473,6 +473,7 @@ class _RuleCard(Panel):
                                 else tr("control.rule.expand"),
                                 size=30, icon_size=16,
                                 color=config.C_TEXT_MUTED, parent=self.head, flat=True)
+        self.arrow.set_expanded(self._expanded, animate=False, right=True)
         self.arrow.clicked.connect(lambda: self.set_expanded(not self._expanded))
         head.addWidget(self.arrow, 0, Qt.AlignVCenter)
 
@@ -670,7 +671,7 @@ class _RuleCard(Panel):
         expanded = bool(expanded)
         changed = expanded != self._expanded
         self._expanded = expanded
-        self.arrow.set_icon("chevron_down" if expanded else "chevron_right")
+        self.arrow.set_expanded(expanded, animate=animate, right=True)
         self.arrow.setToolTip(tr("control.rule.collapse") if expanded
                               else tr("control.rule.expand"))
         if animate:

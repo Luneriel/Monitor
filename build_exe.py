@@ -37,19 +37,20 @@ DIST_DIR = os.path.join(ROOT, "dist")
 # 这个运行期钩子把三个流兜到 devnull，见文件里的说明。
 RTHOOK = os.path.join(ROOT, "packaging", "rthook_stdio.py")
 
-# 用不到的 Qt 模块不必进包（PySide6_Addons 里有几百 MB 的 QtWebEngine 之类）。
+# 仅排除未使用的 Qt 模块。WebEngineCore/Widgets 的官方 hook 必须收集
+# QtWebEngineProcess、resources、locales 及其 QtQml/Quick/WebChannel 依赖。
 # 注意别排除标准库的网络相关模块：企业微信通知走 urllib.request → http.client。
 EXCLUDES = [
-    "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick",
-    "PySide6.QtQuick", "PySide6.QtQuick3D", "PySide6.QtQuickWidgets", "PySide6.QtQml",
-    "PySide6.QtMultimedia", "PySide6.QtMultimediaWidgets", "PySide6.QtCharts",
+    "PySide6.QtWebEngineQuick", "PySide6.QtQuick3D", "PySide6.QtQuickWidgets",
+    # QtMultimedia's PyInstaller hook includes its platform/media plugins.
+    "PySide6.QtMultimediaWidgets", "PySide6.QtCharts",
     "PySide6.QtDataVisualization", "PySide6.Qt3DCore", "PySide6.QtBluetooth",
     "PySide6.QtDesigner", "PySide6.QtHelp", "PySide6.QtLocation", "PySide6.QtNfc",
-    "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtPositioning",
+    "PySide6.QtPdf", "PySide6.QtPdfWidgets",
     "PySide6.QtRemoteObjects", "PySide6.QtScxml", "PySide6.QtSensors",
     "PySide6.QtSerialPort", "PySide6.QtSpatialAudio", "PySide6.QtSql", "PySide6.QtSvg",
     "PySide6.QtSvgWidgets", "PySide6.QtTextToSpeech", "PySide6.QtUiTools",
-    "PySide6.QtWebChannel", "PySide6.QtWebSockets",
+    "PySide6.QtWebSockets",
     "tkinter", "numpy", "pandas", "matplotlib", "docx", "lxml", "IPython", "pytest",
 ]
 
@@ -151,6 +152,14 @@ def build(mode: str, console: bool, version: str) -> str:
         "--workpath", os.path.join(BUILD_DIR, "work"),
         "--specpath", BUILD_DIR,
         "--collect-all", "comtypes",          # 网站追踪靠 UIAutomation，comtypes.gen 必须进包
+        "--hidden-import", "PySide6.QtMultimedia",
+        "--hidden-import", "PySide6.QtWebEngineCore",
+        "--hidden-import", "PySide6.QtWebEngineWidgets",
+        "--hidden-import", "PySide6.QtQml",
+        "--hidden-import", "PySide6.QtQuick",
+        "--hidden-import", "PySide6.QtWebChannel",
+        "--hidden-import", "PySide6.QtPositioning",
+        "--add-data", os.path.join(ROOT, "monitor", "assets") + os.pathsep + "monitor/assets",
         "--runtime-hook", RTHOOK,
     ]
     command += ["--onefile"] if mode == "onefile" else ["--onedir"]

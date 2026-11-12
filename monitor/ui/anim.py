@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QParallelAnimationGroup, QPauseAnimation,
-                            QPoint, QPropertyAnimation, QRect, QSequentialAnimationGroup, Qt,
+                            QEvent, QPoint, QPropertyAnimation, QRect, QSize, QSequentialAnimationGroup, Qt,
                             QTimer, QVariantAnimation)
-from PySide6.QtWidgets import (QAbstractScrollArea, QGraphicsOpacityEffect, QSizePolicy, QVBoxLayout,
+from PySide6.QtWidgets import (QAbstractScrollArea, QGraphicsOpacityEffect, QSizePolicy,
                                QWidget)
 
 from .. import config
+from . import motion
 
 # 保持动画对象引用，避免被 GC 回收
 _running: set = set()
@@ -317,286 +318,208 @@ def slide_in(widget: QWidget, dy: int = 14, duration: int = config.ANIM_NORMAL) 
 # 每帧压缩控件高度会让内部布局反复重排（文字重新换行 → 高度再变），表现出来就是
 # 卡片在收起时"发抖"。
 # --------------------------------------------------------------------------
-def clip_holder(widget: QWidget) -> QWidget:
-    """按需给 ``widget`` 包两层容器，返回**外层**（父布局里的那一项）。
+class _ClipHolder(QWidget):
+    """One layout item, one clipping boundary; the child never gets compressed.
 
-    外层（holder）负责给区域占位，内层（view）才是逐帧变高的裁剪框。要两层的原因：
-    展开时如果让**父布局里那一项**的高度逐帧变大，父链的尺寸需求就逐帧变大，而父链的
-    实际几何要晚一轮布局才跟上 —— 这一两帧的高度缺口会被 ``qGeomCalc`` 从别的项目身上
-    扣（实测：控制页规则卡的标题行被从 53 挤到 25、内容整体上跳 28px；通知页时长下拉栏
-    上方的勾选网格被挤掉，整条下拉栏上跳 19px，这就是用户报的"展开时文字发抖"）。
-
-    新结构下展开瞬间外层就直接占满目标高度、之后全程不动，逐帧变化的只有内层，于是
-    布局需求从头到尾不变、谁也不挪位（见 ``animate_height``）。
+    The old two-layer holder reserved the full expansion immediately and only grew
+    ancestors. Its layout minimum therefore retained the whole gap until finish.
+    A manually positioned child cannot contribute a rigid minimum to this holder.
     """
+    def __init__(self, content: QWidget, parent: QWidget | None, collapsed: bool, gap=0):
+        super().__init__(parent)
+        self.setObjectName("ClipHolder")
+        self.content = content
+        self._layout_gap = gap
+        self._height_anim = None
+        self._expanded = not collapsed
+        self._extent = 0 if collapsed else None
+        self._placing = False
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        content.setParent(self)
+        content.setMinimumHeight(0)
+        content.setMaximumHeight(16777215)
+        content.installEventFilter(self)
+        content.show()
+        if collapsed:
+            self.setFixedHeight(0)
+            self.hide()
+
+    def natural_height(self) -> int:
+        width = max(1, self.width())
+        content = self.content
+        hint = content.heightForWidth(width) if content.hasHeightForWidth() else -1
+        return self._layout_gap + max(0, hint if hint >= 0 else content.sizeHint().height())
+
+    def sizeHint(self):  # noqa: N802
+        height = self.natural_height() if self._extent is None else self._extent
+        return QSize(self.content.sizeHint().width(), height)
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QSize(0, 0)
+
+    def _place(self):
+        if self._placing:
+            return
+        self._placing = True
+        try:
+            content = self.content
+            content.setGeometry(0, self._layout_gap, max(1, self.width()),
+                                max(0, self.natural_height() - self._layout_gap))
+            if content.layout() is not None:
+                content.layout().activate()
+        finally:
+            self._placing = False
+
+    def resizeEvent(self, event):  # noqa: N802
+        self._place()
+        super().resizeEvent(event)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if obj is self.content and event.type() == QEvent.LayoutRequest and not self._placing:
+            self._place()
+            animation = self._height_anim
+            if animation is not None and self._expanded:
+                animation.setEndValue(self.natural_height())
+            elif self._expanded:
+                self.updateGeometry()
+                _settle_ancestors(self)
+        return False
+
+
+def clip_holder(widget: QWidget) -> QWidget:
+    """Return the actual animated layout item, preserving the public content API."""
     holder = getattr(widget, "_clip_container", None)
     if holder is not None:
         return holder
-
+    motion.track_input()
     parent = widget.parentWidget()
     layout = parent.layout() if parent is not None else None
     index = layout.indexOf(widget) if layout is not None else -1
-    collapsed = widget.maximumHeight() == 0
-
-    holder = QWidget(parent)
-    holder.setObjectName("ClipHolder")
-    outer = QVBoxLayout(holder)
-    outer.setContentsMargins(0, 0, 0, 0)
-    outer.setSpacing(0)
-
-    view = QWidget(holder)
-    view.setObjectName("ClipView")
-    inner = QVBoxLayout(view)
-    inner.setContentsMargins(0, 0, 0, 0)
-    inner.setSpacing(0)
-    inner.addWidget(widget)
-    outer.addWidget(view)
-    # 内层裁剪框必须钉在外层顶部：外层在展开动画里全程是"目标高度"，而内层当时只有
-    # 当前动画高度，QVBoxLayout 会把偏小的内层**垂直居中**在外层里（实测 y = (275-0)/2
-    # = 137px），于是内容整体从下方 137px 处往上滑 —— 标题行不跳了，改成内容跳。
-    # 钉住顶部后内层从外层上沿向下展开，内容首行一动不动。
-    outer.setAlignment(view, Qt.AlignTop)
-
-    # 约束交给容器：控件本体恢复成"自然高度"，动画期间也不会被压扁
-    widget.setMinimumHeight(0)
-    widget.setMaximumHeight(16777215)
-    widget.setVisible(True)
-    widget._clip_container = holder
-    widget._clip_view = view
-    holder._clip_view = view
-
+    collapsed = widget.maximumHeight() == 0 or widget.isHidden()
     if layout is not None:
-        layout.insertWidget(max(0, min(index, layout.count())), holder)
-        # 兜住多余高度：收起时释放出来的空间若被"别的"项目吃掉，它们就会长高一下。
-        # 尾部弹簧独占多余空间后，其余各项的位置就完全不受影响。
-        if hasattr(layout, "addStretch") and layout.count():
-            last = layout.itemAt(layout.count() - 1)
-            if last is not None and last.widget() is holder:
-                layout.addStretch(1)
-    holder.setMinimumHeight(0)
-    view.setMinimumHeight(0)
-    holder.setMaximumHeight(0 if collapsed else 16777215)
-    view.setMaximumHeight(0 if collapsed else 16777215)
+        layout.removeWidget(widget)
+    # A header/content pair owns its inter-item gap. Fold that gap into the
+    # animated extent too, otherwise QWidget.hide() removes spacing in one jump
+    # even after the content has smoothly reached zero pixels.
+    gap = 0
+    if layout is not None and index == 1 and layout.count() == 1:
+        gap = max(0, layout.spacing())
+        layout.setSpacing(0)
+    holder = _ClipHolder(widget, parent, collapsed, gap)
+    widget._clip_container = holder
+    # Compatibility for diagnostics that previously inspected a second clip layer.
+    widget._clip_view = holder
+    holder._clip_view = holder
+    if layout is not None:
+        layout.insertWidget(max(0, index), holder)
     holder.setVisible(not collapsed)
+    _settle_ancestors(holder)
     return holder
 
 
+def _stop_height(holder):
+    previous = holder._height_anim
+    if previous is not None:
+        holder._height_anim = None
+        previous.stop()
+        previous.deleteLater()
+
+
 def clip_height(widget: QWidget, height: Optional[int], visible: Optional[bool] = None) -> None:
-    """不做动画地设置裁剪高度（``height=None`` = 恢复自动高度）。"""
+    """Set a collapsed or natural height immediately, cancelling any transition."""
     holder = clip_holder(widget)
-    view = getattr(holder, "_clip_view", holder)
-    limit = 16777215 if height is None else max(0, int(height))
-    holder.setMinimumHeight(0)
-    holder.setMaximumHeight(limit)
-    view.setMinimumHeight(0)
-    view.setMaximumHeight(limit)
+    _stop_height(holder)
+    holder._extent = None if height is None else max(0, int(height))
+    holder._expanded = height is None or bool(height)
+    if height is None:
+        holder.setMinimumHeight(0)
+        holder.setMaximumHeight(16777215)
+    else:
+        holder.setFixedHeight(holder._extent)
     if visible is not None:
         holder.setVisible(bool(visible))
+    holder._place()
+    holder.updateGeometry()
     _settle_ancestors(holder)
 
 
 def _settle_ancestors(widget: QWidget) -> None:
-    """把 ``widget`` 的祖先按"新的尺寸需求"同步放大到位。
+    """Invalidate bottom-up, then lay out top-down in the *same* animation frame.
 
-    逐帧抬高裁剪容器的上界，等于逐帧抬高**父链的尺寸需求**（Qt 在算布局时会用
-    ``maximumSize`` 去夹控件的 sizeHint），但父链的**实际几何**要等下一轮布局
-    （``QScrollArea`` 重新给内层控件定尺寸、各层 ``QLayout::activate``）才跟上。
-    这一两帧的"高度缺口"会被 ``qGeomCalc`` 从**前面的项目**身上扣：控制页规则卡
-    里是标题行被从 53 挤到 25（内容整体上跳 28px），通知页时长下拉栏里是被挤掉
-    上方的勾选网格（整条下拉栏上跳 19px）——用户看到的就是"展开时文字发抖"。
-
-    所以这里不等事件循环，直接把祖先撑到各自的 sizeHint（只增不减，且跳过顶层
-    窗口；碰到滚动区域就只处理它的内层控件，那才是内容真正所在的画布）。
+    Both shrinking and growing change the scroll canvas, so siblings close their
+    gap while the content is clipped rather than waiting for animation completion.
+    No sibling minimum heights or permanent ancestor height locks are introduced.
     """
     chain = []
     parent = widget.parentWidget()
+    scroll = None
     while parent is not None and not parent.isWindow():
+        if isinstance(parent, QAbstractScrollArea):
+            scroll = parent
+            break
         chain.append(parent)
         parent = parent.parentWidget()
-
+    for ancestor in chain:
+        layout = ancestor.layout()
+        if layout is not None:
+            layout.invalidate()
+        ancestor.updateGeometry()
+    if scroll is not None:
+        canvas = scroll.widget() if hasattr(scroll, "widget") else None
+        if canvas is not None:
+            viewport = scroll.viewport()
+            layout = canvas.layout()
+            hint = layout.totalHeightForWidth(viewport.width()) if layout and layout.hasHeightForWidth() else -1
+            needed = max(canvas.minimumSizeHint().height(), hint if hint >= 0 else canvas.sizeHint().height())
+            canvas.resize(viewport.width(), max(viewport.height(), needed))
     for ancestor in reversed(chain):
-        if isinstance(ancestor, QAbstractScrollArea):
-            inner = ancestor.widget()
-            if inner is not None:
-                needed = inner.sizeHint().height()
-                if inner.height() < needed:
-                    inner.resize(inner.width(), needed)
-                layout = inner.layout()
-                if layout is not None:
-                    layout.activate()
-            break
-        needed = ancestor.sizeHint().height()
-        if ancestor.height() < needed:
-            ancestor.resize(ancestor.width(), needed)
         layout = ancestor.layout()
         if layout is not None:
             layout.activate()
 
 
-def _item_widgets(item):
-    """展开一个布局项里的所有控件（布局项可能是子布局，例如卡片标题行）。"""
-    if item is None:
-        return
-    widget = item.widget()
-    if widget is not None:
-        yield widget
-        return
-    layout = item.layout()
-    if layout is not None:
-        for index in range(layout.count()):
-            yield from _item_widgets(layout.itemAt(index))
-
-
-def _unlock_items(locked) -> None:
-    for widget, minimum, maximum in locked or ():
-        try:
-            widget.setMinimumHeight(minimum)
-            widget.setMaximumHeight(maximum)
-        except RuntimeError:            # 控件已被销毁（重建界面时）
-            pass
-
-
-def _lock_items_before(holder: QWidget) -> list:
-    """动画期间把"排在 holder 之前"的兄弟项钉成固定高度。
-
-    父链的实际几何要晚一轮布局才跟上新的高度需求，这一两帧的高度缺口会被
-    ``qGeomCalc`` 从排在 holder **之前**的项目身上扣 —— 实测：控制页规则卡里标题行
-    被从 53 挤到 25（内容整体上跳 28px），通知页时长下拉栏里是上方的勾选网格被挤掉
-    （整条下拉栏上跳 19px）。把这些项目钉住后，缺口只能由 holder 自己吃：它本来就是
-    一个高度可变的裁剪框，肉眼看不到它变矮。
-    """
-    locked = []
-    node = holder
-    while node is not None and not node.isWindow():
-        parent = node.parentWidget()
-        if parent is None or isinstance(parent, QAbstractScrollArea):
-            break
-        layout = parent.layout()
-        if layout is not None:
-            index = layout.indexOf(node)
-            for position in range(index if index >= 0 else layout.count()):
-                for widget in _item_widgets(layout.itemAt(position)):
-                    if widget is node or widget in [entry[0] for entry in locked]:
-                        continue
-                    height = max(0, widget.height())
-                    locked.append((widget, widget.minimumHeight(), widget.maximumHeight()))
-                    widget.setMinimumHeight(height)
-                    widget.setMaximumHeight(height)
-        node = parent
-    return locked
-
-
 def animate_height(widget: QWidget, expanded: bool, parent=None) -> None:
-    """展开 / 收起 widget 所在区域，高度做补间。
-
-    两个方向用的是**不同**的动画量，因为只有"需求变大"才会引发前文那种挤压：
-
-    * 展开 —— 外层容器瞬间占满目标高度（父布局的需求一次到位、之后全程不变），
-      逐帧变高的只有内层裁剪框：内容就在已经预留好的空间里"向下展开"。父链不变，
-      所以标题行 / 勾选网格一格都不会挪。展开那一帧的需求跳变由 ``_settle_ancestors``
-      当场撑住。
-    * 收起 —— 外层容器逐帧变矮（需求只减不增，多出来的空间有尾部弹簧兜着），
-      内层不限高，内容自然被外层裁掉。
-    """
+    """Retarget from the visible height; stable content is revealed with one clip."""
     holder = clip_holder(widget)
-    view = getattr(holder, "_clip_view", holder)
-    _unlock_items(getattr(holder, "_locked_items", None))
-    holder._locked_items = None
-    previous = getattr(holder, "_height_anim", None)
-    if previous is not None:
-        try:
-            previous.stop()
-            previous.deleteLater()
-        except RuntimeError:
-            pass
-        holder._height_anim = None
+    start = holder.height() if not holder.isHidden() else 0
+    _stop_height(holder)
+    holder._expanded = bool(expanded)
+    holder._place()
+    end = holder.natural_height() if expanded else 0
+    if not motion.should_animate(widget):
+        clip_height(widget, None if expanded else 0, visible=expanded)
+        return
+    holder._extent = start
+    holder.setFixedHeight(start)
+    holder.show()
+    animation = QVariantAnimation(holder)
+    animation.setDuration(motion.COLLAPSE_MS)
+    animation.setStartValue(int(start))
+    animation.setEndValue(int(end))
+    animation.setEasingCurve(motion.easing())
 
-    if expanded:
-        holder.setVisible(True)
-    # 量自然高度前先把宽度推到真实值：收起状态下的内容停在旧宽度上（hidden 的控件
-    # 不参与排版，实测宽度一直是 100px），带自动换行的文本会按那个宽度换行，于是
-    # ``sizeHint`` 既可能偏大（实测 403，真实宽度下只要 375 —— 展开动画结束后整套
-    # 内容会缩回 28px，正是用户报的“展开时文本/图标高度收缩”）也可能偏小（动画期间
-    # 孩子被压扁）。这里先撑一次父链、让内容布局在真实宽度下重算，再取自然高度。
-    _settle_ancestors(holder)
-    content_layout = widget.layout()
-    if content_layout is not None:
-        content_layout.activate()
-    # 动画期间冻结内容高度：内部布局不重排，高度也就不会抖。
-    # 展开时用 sizeHint（要长到完整高度）；收起时改用**当前实际高度**——布局可能
-    # 已经把它压得比 sizeHint 小（实测 348 vs 362），若按 sizeHint 冻结，容器第一帧
-    # 会被内容顶回 362（收起时先向上"弹"14px 再回落，正是要修的发抖）。
-    natural = max(0, widget.sizeHint().height())
-    if widget.hasHeightForWidth():
-        # 带自动换行的内容在宽度确定后，真实自然高度由 heightForWidth 给出：
-        # sizeHint 是"不受宽度约束"的那份估计（实测 403 vs 真实 375），差出来的
-        # 28px 会在动画结束时被布局收回去 —— 用户看到的就是「展开时文本/图标高度收缩」。
-        hint = widget.heightForWidth(widget.width())
-        if hint >= 0:
-            natural = max(0, int(hint))
-    freeze = natural if expanded else min(natural, widget.height() or natural)
-    widget.setMinimumHeight(freeze)
-    widget.setMaximumHeight(freeze)
-
-    # 内层裁剪框的竖直尺寸策略设成 Ignored：它的最小高度来自被冻结的内容
-    # （min=max=freeze），而 Qt 的 qSmartMinSize 只会用显式最小尺寸往上抬、不会把
-    # 布局推导出的最小值压下去——所以只写 setMinimumHeight(0) 是空操作，容器依旧是
-    # "刚性"的。设成 Ignored 后它才能真的被压矮（收起方向靠它把内容裁掉）。
-    # 动画结束必须恢复原策略：长期 Ignored 会让容器去抢父布局的富余空间。
-    policy = getattr(view, "_layout_policy", None)
-    if policy is None:
-        policy = view.sizePolicy()
-        view._layout_policy = policy
-    view.setSizePolicy(policy.horizontalPolicy(), QSizePolicy.Ignored)
-
-    if expanded:
-        start = view.height() if view.isVisible() else 0
-        end = natural
-    else:
-        start = holder.height() if holder.isVisible() else 0
-        end = 0
-
-    animation = QVariantAnimation(parent or holder)
-    animation.setDuration(config.ANIM_NORMAL)
-    animation.setStartValue(int(max(0, start)))
-    animation.setEndValue(int(max(0, end)))
-    animation.setEasingCurve(QEasingCurve.OutCubic)
-
-    def _apply(value) -> None:
-        height = int(value)
-        if expanded:
-            # 外层钉在目标高度（只钉一次），逐帧只抬高内层裁剪框
-            holder.setMinimumHeight(natural)
-            holder.setMaximumHeight(natural)
-            view.setMinimumHeight(0)
-            view.setMaximumHeight(height)
-        else:
-            view.setMinimumHeight(0)
-            view.setMaximumHeight(16777215)
-            holder.setMinimumHeight(0)
-            holder.setMaximumHeight(height)
+    def _apply(value):
+        holder._extent = max(0, int(value))
+        holder.setFixedHeight(holder._extent)
+        holder.updateGeometry()
         _settle_ancestors(holder)
 
-    def _finish() -> None:
+    def _finish():
+        if holder._height_anim is not animation:
+            return
         holder._height_anim = None
-        _unlock_items(getattr(holder, "_locked_items", None))
-        holder._locked_items = None
-        view.setSizePolicy(policy)          # 恢复原策略（见上面的注释）
-        widget.setMinimumHeight(0)          # 解除冻结，让内容按需自适应
-        widget.setMaximumHeight(16777215)
-        holder.setMinimumHeight(0)
-        view.setMinimumHeight(0)
+        holder._extent = None if expanded else 0
         if expanded:
+            holder.setMinimumHeight(0)
             holder.setMaximumHeight(16777215)
-            view.setMaximumHeight(16777215)
         else:
-            holder.setMaximumHeight(0)
-            view.setMaximumHeight(0)
-            holder.setVisible(False)
+            holder.setFixedHeight(0)
+            holder.hide()
+        holder.updateGeometry()
+        _settle_ancestors(holder)
 
     animation.valueChanged.connect(_apply)
     animation.finished.connect(_finish)
-    holder._height_anim = animation       # 持有引用，避免动画对象被回收
-    holder._locked_items = _lock_items_before(holder)
-    _apply(start)                         # 先把第一帧摆好（外层占位 / 内层归零）
+    holder._height_anim = animation
+    _apply(start)
     animation.start(QAbstractAnimation.DeleteWhenStopped)

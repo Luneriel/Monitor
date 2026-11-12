@@ -23,3 +23,5 @@ Thumbs.db
 # 打包产物（由 build_exe.py 重新生成）
 build/
 dist/
+# 本地测试产物（由 tools/ 下的测试脚本生成）
+outputs/

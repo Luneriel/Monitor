@@ -1,0 +1,9 @@
+{
+  "webwallgl": "3.0.1",
+  "npm_integrity": "sha512-cxv8yNBpCkcRQGMrtyWlH0RBv5zaLfRlXks9aY7lMpG7A+h1T+0lqBQLw9vdsFwxPcnXGai8zN4BdfN+UZNZuA==",
+  "bundle_sha256": "ee2fbe9a4d15a9ecca837c08a76b90d8c3d98dd2619976929890c9f51de2ff9c",
+  "source": "https://registry.npmjs.org/webwallgl/-/webwallgl-3.0.1.tgz",
+  "bundle_dependencies": "Mediabunny (MPL-2.0, inlined by upstream); see LICENSE-Mediabunny-1.txt",
+  "mediabunny_reference_lock_version": "1.61.3",
+  "mediabunny_source": "https://registry.npmjs.org/mediabunny/-/mediabunny-1.61.3.tgz"
+}

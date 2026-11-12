@@ -17,7 +17,7 @@ from .control_service import ControlService
 from .database import Database
 from .i18n import set_language, tr
 from .tracker import ProcessTracker
-from .ui import theme
+from .ui import theme, glass
 from .ui.main_window import MainWindow
 
 
@@ -226,6 +226,7 @@ class MonitorApp:
         self.apply_theme(name, rebuild=True)
 
     def apply_theme(self, name: str, rebuild: bool = False) -> None:
+        glass.configure(self.db)
         config.set_theme(name)
         self.app.setPalette(theme.app_palette())
         self.app.setStyleSheet(theme.build_stylesheet())
@@ -358,6 +359,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def create_qapplication(argv: list[str]) -> QApplication:
+    # QtWebEngine is loaded lazily when a live wallpaper is selected.
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(argv)
@@ -421,6 +424,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     language = db.get_setting(config.S_LANGUAGE, config.LANGUAGE_ZH)
     set_language(language)
     theme_setting = db.get_setting(config.S_THEME, config.THEME_SYSTEM)
+    glass.configure(db)
     config.set_theme(theme_setting)
     app.setPalette(theme.app_palette())
     app.setStyleSheet(theme.build_stylesheet())

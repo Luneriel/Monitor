@@ -923,7 +923,7 @@ python build_exe.py --console  :: 保留控制台，排查"双击没反应"时�
   所以从 GitHub 下载的源码打包出的 exe、或 Release 里的 exe，都是**解压 / 打包即用**。
 
 * **版本号**取自 `monitor/config.py` 的 `APP_VERSION`，同一串会写进 exe 的版本资源
-  （产品名 / 文件说明 / 版权），发布 tag 用 `v` + 该串（当前 `v0.1.0`）。
+  （产品名 / 文件说明 / 版权），发布 tag 用 `v` + 该串（当前 `v0.2.0`）。
 * **默认非管理员启动**：生成的 exe 清单是 `asInvoker`，日常功能（追踪、限制、遮罩、
   暂停播放）都不需要提权。需要"开机自启 / 管理员启动 / 计划任务"时才右键 exe →
   **以管理员身份运行**，设置页里也有对应说明。
@@ -941,8 +941,8 @@ python build_exe.py --console  :: 保留控制台，排查"双击没反应"时�
   假装通过：几条**读源码**的断言（`inspect.getsource`，打包后没有 .py 文件可读）与
   **拉起 python 子进程发声**的音频检查（冻结后 `sys.executable` 就是 exe 自己）；
   进程树检查改用 `cmd /c ping` 当作那个安静的、长期存活的子进程。
-* **发布流程**：`git tag v0.1.0 && git push origin v0.1.0`，然后在 GitHub 上新建 Release，
-  上传 `dist\Monitor-0.1.0-win64.zip`（单文件 exe，解压即用）。
+* **发布流程**：`git tag v0.2.0 && git push origin v0.2.0`，然后在 GitHub 上新建 Release，
+  上传 `dist\Monitor-0.2.0-win64.zip`（单文件 exe，解压即用）。
 
 
 ## 后台空闲开销优化

@@ -542,4 +542,25 @@ def build_stylesheet() -> str:
         outline: 0;
     }}
     QDialog {{ background: {c.C_SURFACE}; }}
+    """ + (_glass_stylesheet() if c.current_theme() == c.THEME_GLASS else "") + _effect_stylesheet()
+
+
+def _effect_stylesheet():
+    from . import glass_effects
+    return glass_effects.stylesheet()
+
+
+def _glass_stylesheet() -> str:
+    # Independent native windows need an opaque backing for readable menus/dialogs.
+    return f"""
+    #AppRoot, #BodyArea, #ContentArea, #PageSurface, #PageHost {{ background: transparent; }}
+    #AppRoot {{ border: none; }}
+    #NavBar {{ background: #33101A30; border-right: 1px solid #287F97BA; }}
+    #TitleBar {{ background: #1818233D; }}
+    #TopBar {{ background: #2418233D; }}
+    QMainWindow[maximized="false"] #AppRoot {{ border: none; }}
+    QMenu, QDialog, QComboBox QAbstractItemView, #PopupContainer, #DialogContainer {{ background: #202C43; }}
+    QSlider::groove:horizontal {{ background: #547389B0; height: 4px; border-radius: 2px; }}
+    QSlider::sub-page:horizontal {{ background: #A7BAFF; border-radius: 2px; }}
+    QSlider::handle:horizontal {{ background: #EDF3FF; width: 13px; margin: -5px 0; border-radius: 6px; }}
     """

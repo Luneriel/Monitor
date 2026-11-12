@@ -11,7 +11,7 @@ import os
 import sys
 
 APP_NAME = "Monitor"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 
 # --------------------------------------------------------------------------
 # 路径
@@ -185,12 +185,51 @@ C_HIGHLIGHT = "#FFEB3B"
 THEME_DARK = "dark"
 THEME_LIGHT = "light"
 THEME_SYSTEM = "system"
+THEME_GLASS = "glass"
+
+# Material settings use percentages; alpha hex remains QColor/QSS compatible.
+_glass_options = {"opacity": 44, "mask": 26, "blur": 28, "accent": "#889CFF"}
+
+def set_glass_options(options: dict) -> None:
+    _glass_options.update(options)
+
+def _glass_palette() -> dict:
+    palette = dict(DARK_THEME)
+    alpha = max(15, min(90, int(_glass_options["opacity"])))
+    def translucent(rgb, percent):
+        return f"#{round(percent * 2.55):02X}{rgb}"
+    palette.update({
+        "C_APP_BG": "#101828",
+        "C_SURFACE": translucent("1D2942", alpha),
+        "C_SURFACE_SOFT": translucent("8095BE", 16),
+        "C_SURFACE_HOVER": translucent("7088B8", min(95, alpha + 13)),
+        "C_SIDEBAR": translucent("101A30", 32),
+        "C_SIDEBAR_HOVER": translucent("ADC5FF", 15),
+        "C_SIDEBAR_ACTIVE": translucent("9DAFFF", 23),
+        "C_NAV_TEXT": "#BCC9E2", "C_NAV_TEXT_ACTIVE": "#FFFFFF",
+        "C_PRIMARY": "#5D6BCD", "C_PRIMARY_HOVER": "#4E5CB8",
+        "C_PRIMARY_SOFT": translucent("9BB0FF", 17),
+        "C_PRIMARY_SOFT_HOVER": translucent("9BB0FF", 25),
+        "C_PRIMARY_BORDER": "#859DDC", "C_ACCENT_SOFT_TEXT": "#D2DCFF",
+        "C_APP_BORDER": "#507D95C5", "C_BORDER": "#386E8AAE",
+        "C_BORDER_STRONG": "#637F9CBC", "C_DIVIDER": "#287F97BA",
+        "C_TOPBAR": translucent("18233D", 20), "C_TOPBAR_BORDER": "#267F97BA",
+        "C_TEXT": "#F5F8FF", "C_TEXT_BODY": "#DEE7F7",
+        "C_TEXT_MUTED": "#BCCAE1", "C_TEXT_FAINT": "#9CAFCB",
+        "C_ON_CANVAS": "#F5F8FF", "C_ON_CANVAS_MUTED": "#BCCAE1",
+        "C_ON_CANVAS_FAINT": "#9CAFCB", "C_TOPBAR_TITLE": "#F5F8FF",
+        "C_TOPBAR_HINT": "#BCCAE1", "C_TOOLTIP_BG": "#202C43",
+        "C_TOOLTIP_TEXT": "#F5F8FF",
+    })
+    return palette
 
 _current_theme = THEME_DARK
 
 
 def resolve_theme(name: str) -> str:
     """把 system（跟随系统）解析为 dark / light。"""
+    if name == THEME_GLASS:
+        return THEME_GLASS
     if name == THEME_LIGHT:
         return THEME_LIGHT
     if name == THEME_DARK:
@@ -213,7 +252,8 @@ def resolve_theme(name: str) -> str:
 def set_theme(name: str) -> str:
     """应用主题（写入本模块的颜色令牌），返回实际生效的主题名。"""
     resolved = resolve_theme(name)
-    palette = DARK_THEME if resolved == THEME_DARK else LIGHT_THEME
+    palette = (_glass_palette() if resolved == THEME_GLASS else
+               DARK_THEME if resolved == THEME_DARK else LIGHT_THEME)
     globals().update(palette)
     # 兼容旧命名
     globals()["C_BG"] = palette["C_APP_BG"]
@@ -326,6 +366,16 @@ S_CLOSE_ACTION = "close_action"
 S_TRAY_ICON = "tray_icon"
 S_LANGUAGE = "language"
 S_THEME = "theme"
+S_GLASS_WALLPAPER = "glass.wallpaper"
+S_GLASS_MEDIA_TYPE = "glass.media_type"
+S_GLASS_IMPORT_MODE = "glass.import_mode"
+S_GLASS_IMPORT_TITLE = "glass.import_title"
+S_GLASS_IMPORT_SOURCE_TYPE = "glass.import_source_type"
+S_GLASS_BLUR = "glass.blur"
+S_GLASS_OPACITY = "glass.opacity"
+S_GLASS_MASK = "glass.mask"
+S_GLASS_TINT = "glass.wallpaper_tint"
+S_GLASS_EXPANDED = "glass.expanded"
 # 被静音程序"原本的音量"记忆（JSON：程序路径 -> [音量, 是否静音]）：
 # Monitor 崩溃/被强杀时靠它在下次启动把音量放回去。
 S_AUDIO_ORIGINALS = "audio_originals"
